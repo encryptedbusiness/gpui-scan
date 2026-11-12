@@ -1,10 +1,29 @@
 # gpui-scan
 
-React Scan for [GPUI](https://gpui.rs): a floating toolbar that outlines everything that updated
-just now, a live FPS readout, and an element picker that opens the
-[gpui-devtools](https://github.com/joris-gallot/gpui-devtools) inspector for whatever you clicked.
+[![crates.io](https://img.shields.io/crates/v/gpui-scan.svg)](https://crates.io/crates/gpui-scan)
+[![docs.rs](https://img.shields.io/docsrs/gpui-scan)](https://docs.rs/gpui-scan)
+[![CI](https://github.com/encryptedbusiness/gpui-scan/actions/workflows/ci.yml/badge.svg)](https://github.com/encryptedbusiness/gpui-scan/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MSRV](https://img.shields.io/badge/MSRV-1.98-blue.svg)](Cargo.toml)
 
-![The toolbar over a demo application](.github/assets/dock.png)
+**React Scan for [GPUI](https://gpui.rs).** A floating overlay that outlines the views that
+re-rendered just now, reports frame rate, and opens the
+[gpui-devtools](https://github.com/joris-gallot/gpui-devtools) inspector for any element you pick.
+
+![The gpui-scan toolbar over the demo application](assets/screenshots/toolbar.png)
+
+## Features
+
+- **Re-render outlines.** Every tracked view that called `cx.notify()` gets a purple outline with a
+  `Name ×count` label. Outlines fade over 750ms and chase an element that moves.
+- **Live FPS.** A frame-rate readout that turns amber under 50 and red under 30.
+- **Element picker.** Click the crosshair, then any element. The widget grows into a 550×400
+  inspector with the element's box model, style groups, and temporary edits — the full
+  gpui-devtools panel, not a reimplementation.
+- **Zero boilerplate tracking.** Add `#[gpui_scan::scan]` to a `Render` impl and render the entity
+  normally. No call-site wrapper, and the tracking element is only built on frames that changed.
+- **Leave it out of release builds.** The scanner is opt-in. Feature-gate the dependency and the
+  generated code compiles down to a single atomic load.
 
 ## Install
 
@@ -14,13 +33,21 @@ gpui = { package = "gpui-pre", version = "0.3" }
 gpui-scan = "0.1"
 ```
 
-Your application must resolve to the same `gpui-pre` crate as `gpui-scan`, otherwise Cargo builds
-two incompatible copies. GPUI only builds its inspector with the `inspector` feature or in debug
-builds, so gate the scanner behind a feature of your own to keep it out of release builds.
+Your application must resolve to the same `gpui-pre` version as `gpui-scan`; otherwise Cargo builds
+two incompatible copies of GPUI. The scanner enables GPUI's `inspector` feature, so gate it behind
+a development feature instead of shipping it in release builds:
 
-## Use
+```toml
+[features]
+scan = ["dep:gpui-scan"]
 
-Install the scanner once, after the rest of your application:
+[dependencies]
+gpui-scan = { version = "0.1", optional = true }
+```
+
+## Quick start
+
+Install the scanner once, after the rest of the application:
 
 ```rust
 app.run(|cx| {
@@ -31,61 +58,85 @@ app.run(|cx| {
 });
 ```
 
-Wrap the root view with `scan_root` and track the views whose updates should be attributed:
+Add the attribute to the views whose updates should be attributed:
+
+```rust
+#[gpui_scan::scan]
+impl Render for Counter {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.count.to_string())
+    }
+}
+```
+
+Render them like any other entity:
 
 ```rust
 impl Render for App {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         gpui_scan::scan_root(
             div()
+                .relative()
                 .size_full()
-                .child(self.sidebar.scan_as("Sidebar", cx))
-                .child(self.content.scan(cx)), // uses the view's type name
+                .child(self.sidebar.clone())
+                .child(self.content.clone()),
         )
     }
 }
 ```
 
 `scan_root` pins the application to the window's full width, so the inspector floats over the
-application instead of shrinking it. If you would rather let GPUI reserve space for it, add
-`gpui_scan::scan_layer()` as the last child of your root view instead; the layer is absolutely
+application instead of shrinking it. If you would rather let GPUI reserve space for the inspector,
+use `gpui_scan::scan_layer()` as the last child of your root view; the layer is absolutely
 positioned over the window and takes no part in the layout.
 
-## The toolbar
+### Tracking from the call site
 
-The widget sits 24px in from the bottom-right corner. Drag it and, past 60px, it eases to the
-corner the pointer moved toward. A shorter drag stays where you let go. Drag it mostly off an
-edge and it tucks into a tab; click the tab, or pull it back in, and it opens again. The whole
-bar drags. The buttons do not.
+The attribute is optional. `track_view` and the `ScanTrackExt` methods track a view where it is
+rendered, which is useful when the label has to be chosen at runtime:
+
+```rust
+div()
+    .child(self.sidebar.scan_as("Sidebar", cx))
+    .child(self.content.scan(cx))          // type name as the label
+    .child(self.rows[i].scan_keyed("Row", i, cx)) // lists built from one call site
+```
+
+## The widget
+
+The toolbar sits 24px in from the bottom-right corner. Drag it and, past 60px, it eases to the
+corner the pointer moved toward; a shorter drag stays where you let go. Drag it mostly off an edge
+and it tucks into a tab. Click the tab, or pull it back in, and it opens again. The bar drags; the
+buttons do not.
 
 | Control | Behavior |
 | --- | --- |
 | Inspect | Starts element picking. GPUI highlights whatever is under the pointer, and clicking opens that element in the widget. Click again, or press `Esc`, to leave picking. While an element is focused the icon stays lit, and `Esc` returns to picking. |
 | Outline re-renders | Outlines every tracked view that was notified. |
-| FPS | Frames per second. Under 30 is red, under 50 is amber, and the rest is the purple readout. It is not a button. |
+| FPS | Frames per second. Under 30 is red, under 50 is amber, otherwise purple. It is a readout, not a button. |
 
 Outlines are purple, one pixel, with a `Name ×count` label on the element's top edge. They fade
 over 750ms. A view that keeps updating stays opaque, and an outline that moves chases its new
 rectangle instead of jumping.
 
-Picking is GPUI's own inspector pass, so hover highlighting and selection behave like
-gpui-devtools: every element is reachable, not just the tracked ones. The scanner hides its own
-overlay while picking is active, because every element — a transparent overlay included — takes
-part in that pass. GPUI draws that hover highlight itself, so it stays GPUI's blue.
+Picking is GPUI's own inspector pass, so every element is reachable, not just the tracked ones. The
+scanner hides its own overlay while picking is active, because every element — a transparent
+overlay included — takes part in that pass.
 
 ## The inspector
 
-![The inspector open inside the widget](.github/assets/inspector.png)
+![The inspector open inside the widget](assets/screenshots/inspector.png)
 
-Selecting an element grows the toolbar into a 550×400 panel, easing upward from whichever corner
-it is anchored to. The body is gpui-devtools' element panel, so the box model, style groups and
-temporary edits are unchanged. The header shows the element's name and source location. Copy puts
-that location on the clipboard and, after a moment, closes the panel. Close does it immediately.
-Drag any edge to resize; the size is remembered.
+Selecting an element grows the toolbar into a 550×400 panel, easing upward from whichever corner it
+is anchored to. The header shows the element's name and source location. Copy puts that location on
+the clipboard and, after a moment, closes the panel; Close does it immediately. Drag any edge to
+resize, and the size is remembered. The body is gpui-devtools' element panel, so the box model,
+style groups, and temporary edits behave exactly as they do there.
+
+## Configuration
 
 `ToggleOutlines` is bound to `cmd-alt-s` (`ctrl-alt-s` elsewhere) and `CancelPick` to `escape`.
-`CancelPick` leaves picking and starts a new pick when an element is focused. Configure both, or
-the starting switch state, with `Config`:
+Configure the bindings, the starting switch state, or the palette with `Config`:
 
 ```rust
 gpui_scan::init_with(
@@ -101,66 +152,68 @@ gpui_scan::init_with(
 
 GPUI rebuilds the whole element tree on every draw, so "this element was laid out again" says
 nothing about whether anything changed. A view's `cx.notify()` is the only honest signal, so
-tracking watches the entity. The zero-boilerplate form is the attribute:
+tracking watches the entity.
 
-```rust
-#[gpui_scan::scan]
-impl Render for Counter {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(self.count.to_string())
-    }
-}
-```
-
-Then render the entity as usual — no call-site wrapper:
-
-```rust
-.child(self.counter.clone())
-```
-
-- `#[gpui_scan::scan]` wraps the `render` method. A view is reported only on frames it was
-  notified, or on its first render.
-- `track_view(&entity, cx)` / `entity.scan(cx)` do the same from the call site when you need a
-  runtime label or an instance key.
+- `#[gpui_scan::scan]` wraps the `render` method and reports the view on its first render and on
+  every frame it was notified.
 - The reported element wraps the view, so the outline lands exactly on its bounds.
-- A frame that reuses everything — including the frames the toolbar itself asks for to keep the
-  FPS reading alive — reports nothing.
+- A frame that reuses everything — including the frames the toolbar itself asks for to keep the FPS
+  reading alive — reports nothing.
 
-The attribute's idle path is one atomic load plus a single map access, and the tracking element is
-only built on frames that actually changed. With scanning disabled (no `init` and no overlay),
-the generated code is a single atomic load and the element is returned untouched.
+With scanning disabled (no `init` and no overlay), the generated code is a single relaxed atomic
+load and the element is returned untouched. With scanning enabled, an idle frame costs one map
+access per tracked view; the tracking element is only built on frames that actually changed.
 
-That means a tracked view corresponds to a view boundary: track the entities you would call
-components, not arbitrary `div`s inside one view's `render`.
+### Performance
 
-## Web
+Measured on Apple Silicon in release mode, with 120 frames per run over trivial one-pixel rows:
 
-The crate is wasm-friendly, and `examples/web` renders the demo in a browser:
+| Case | 500 tracked views | 2000 tracked views |
+| --- | --- | --- |
+| Idle frame, scanning on | 3–6µs/frame (~6–11ns/view) | 0–21µs/frame (~0–10ns/view) |
+| Idle frame, scanning off | not measurable | not measurable |
+| Every view notified each frame | ~79µs/frame (~159ns/view) | — |
+
+The update path includes building the bounds-recording element and pushing one render record per
+changed view. Real views cost far more to render than the row fixture, so the relative overhead is
+smaller in practice.
+
+The toolbar ticks a frame callback while a window is open so the FPS reading and outline fades stay
+live. That is the cost of a HUD; like any devtool, gate it out of release builds.
+
+## Compatibility
+
+| | |
+| --- | --- |
+| Rust | 1.98+ (edition 2024) |
+| GPUI | `gpui-pre` 0.3 |
+| Platforms | macOS, Linux, Windows, and wasm |
+| Inspector | Requires GPUI's `inspector` feature, enabled by this crate |
+
+`init` installs the gpui-devtools inspector renderer, so call it after any library that registers
+its own renderer, and do not also call `gpui_devtools::init`.
+
+## Examples
 
 ```sh
-examples/web/build.sh          # cargo build for wasm32 + wasm-bindgen
+# Native demo
+cargo run -p gpui-scan-basic
+
+# Web demo
+examples/web/build.sh
 python3 -m http.server -d examples/web/www 4173
 ```
 
-Two details the web platform needs:
+Both demos share `examples/basic/src/demo.rs`. The web build needs
+`rustup target add wasm32-unknown-unknown` and a `wasm-bindgen` CLI matching the crate version in
+`Cargo.lock`. The browser has no system fonts, so the page registers the bundled IBM Plex Sans
+face before the first frame.
 
-- `gpui_platform::web_init()` installs the panic hook and logger; `single_threaded_web()` avoids
-  the nightly-only `wasm_thread` machinery.
-- The browser has no system fonts. Register a face for the family GPUI resolves the system font to
-  (`IBM Plex Sans`) before the first frame, or the first text measurement panics.
+## Contributing
 
-## Notes
-
-- `init` installs the gpui-devtools inspector renderer, so call it after any library that
-  registers its own renderer, and do not also call `gpui_devtools::init`.
-- The overlay steps out of the way while the inspector is picking, since every element — including
-  a transparent overlay — takes part in picking. The toolbar is drawn by the inspector itself
-  while an element is focused, because that column is painted on top of the right side of the
-  window and would otherwise eat every click on the widget.
-- The toolbar ticks a frame callback for as long as a window is open so the FPS reading and the
-  outline fades stay live. That is the cost of a HUD; gate it out of release builds like any other
-  devtool.
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the local checks,
+project layout, and release process. Security reports go through [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

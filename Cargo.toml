@@ -3,11 +3,17 @@ name = "gpui-scan"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
-description = "React Scan for GPUI: FPS, re-render outlines and a devtools inspector for any GPUI application"
+description = "React Scan for GPUI: re-render outlines, a live FPS readout, and a devtools inspector for any GPUI application"
+documentation = "https://docs.rs/gpui-scan"
+repository = "https://github.com/encryptedbusiness/gpui-scan"
+readme = "README.md"
 license = "MIT"
 keywords = ["gpui", "devtools", "profiler", "rerender", "scan"]
 categories = ["development-tools::debugging", "gui"]
-include = ["src/**", "assets/**", "README.md", "LICENSE"]
+include = ["/src", "/assets", "/README.md", "/LICENSE", "/CHANGELOG.md"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 gpui = { package = "gpui-pre", version = "0.3.12", features = ["inspector"] }
@@ -25,6 +31,17 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", features = 
   "runtime_shaders",
 ] }
 
+[lints]
+workspace = true
+
 [workspace]
 members = ["examples/basic", "examples/web", "gpui-scan-macros"]
 resolver = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"

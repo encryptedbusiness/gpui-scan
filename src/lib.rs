@@ -1,9 +1,9 @@
 //! React Scan for [GPUI](https://gpui.rs).
 //!
-//! `gpui-scan` adds a React Scan style toolbar to a GPUI application: an element picker, a switch
+//! `gpui-scan` adds a React Scan style widget to a GPUI application: an element picker, a switch
 //! that outlines everything that updated just now, and a live FPS readout. Selecting an element
-//! opens the [gpui-devtools](https://github.com/joris-gallot/gpui-devtools) inspector for that
-//! element.
+//! opens the [gpui-devtools](https://github.com/joris-gallot/gpui-devtools) inspector in the same
+//! widget shell.
 //!
 //! ```no_run
 //! # use gpui::App;
@@ -15,8 +15,21 @@
 //! }
 //! ```
 //!
-//! Then, in the root view's `render`, add [`scan_layer`] and track the views whose updates you
-//! want attributed:
+//! Then, in the root view's `render`, add [`scan_root`] (or [`scan_layer`]) and track the views
+//! whose updates you want attributed. The attribute is the zero-boilerplate form:
+//!
+//! ```
+//! # use gpui::{Context, IntoElement, Render, Window, div, prelude::*};
+//! # struct Counter { count: u32 }
+//! #[gpui_scan::scan]
+//! impl Render for Counter {
+//!   fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+//!     div().child(self.count.to_string())
+//!   }
+//! }
+//! ```
+//!
+//! Render the entity normally after that; no call-site wrapper is needed:
 //!
 //! ```
 //! # use gpui::{div, prelude::*, Context, Entity, IntoElement, Render, Window};
@@ -32,11 +45,14 @@
 //!   div()
 //!     .relative()
 //!     .size_full()
-//!     .child(gpui_scan::track_view(&self.sidebar, cx))
+//!     .child(self.sidebar.clone())
 //!     .child(gpui_scan::scan_layer())
 //! }
 //! # }
 //! ```
+//!
+//! [`track_view`] and [`ScanTrackExt`] track from a call site instead, which is useful when the
+//! label is chosen at runtime.
 //!
 //! [`init`] installs gpui-devtools' inspector renderer, so call it after any library that
 //! registers its own inspector renderer, and do not also call `gpui_devtools::init`.

@@ -21,3 +21,6 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", default-fea
   "runtime_shaders",
 ] }
 gpui-scan = { path = "../.." }
+
+[lints]
+workspace = true
