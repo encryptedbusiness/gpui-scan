@@ -101,15 +101,37 @@ gpui_scan::init_with(
 
 GPUI rebuilds the whole element tree on every draw, so "this element was laid out again" says
 nothing about whether anything changed. A view's `cx.notify()` is the only honest signal, so
-tracking watches the entity:
+tracking watches the entity. The zero-boilerplate form is the attribute:
 
-- `track_view(&entity, cx)` subscribes to the view and reports it when it was notified.
-- The reported element wraps that view, so the outline lands exactly on its bounds.
+```rust
+#[gpui_scan::scan]
+impl Render for Counter {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.count.to_string())
+    }
+}
+```
+
+Then render the entity as usual — no call-site wrapper:
+
+```rust
+.child(self.counter.clone())
+```
+
+- `#[gpui_scan::scan]` wraps the `render` method. A view is reported only on frames it was
+  notified, or on its first render.
+- `track_view(&entity, cx)` / `entity.scan(cx)` do the same from the call site when you need a
+  runtime label or an instance key.
+- The reported element wraps the view, so the outline lands exactly on its bounds.
 - A frame that reuses everything — including the frames the toolbar itself asks for to keep the
   FPS reading alive — reports nothing.
 
-That means a tracked view corresponds to a view boundary: put `track_view` around the entities you
-would call components, not around arbitrary `div`s inside one view's `render`.
+The attribute's idle path is one atomic load plus a single map access, and the tracking element is
+only built on frames that actually changed. With scanning disabled (no `init` and no overlay),
+the generated code is a single atomic load and the element is returned untouched.
+
+That means a tracked view corresponds to a view boundary: track the entities you would call
+components, not arbitrary `div`s inside one view's `render`.
 
 ## Web
 

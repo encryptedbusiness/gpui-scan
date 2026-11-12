@@ -1,7 +1,6 @@
 //! The demo application shown by the native and web examples.
 
 use gpui::{Context, Entity, IntoElement, Render, Window, div, prelude::*, px, rgb};
-use gpui_scan::ScanTrackExt as _;
 
 const CARDS: [(&str, u32); 3] = [("Requests", 1284), ("Errors", 3), ("Latency", 42)];
 
@@ -9,6 +8,7 @@ struct Counter {
   count: u32,
 }
 
+#[gpui_scan::scan]
 impl Render for Counter {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     div()
@@ -57,6 +57,7 @@ struct Pulse {
   phase: f32,
 }
 
+#[gpui_scan::scan]
 impl Render for Pulse {
   fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
     window.request_animation_frame();
@@ -94,6 +95,7 @@ struct Stats {
   refreshes: u32,
 }
 
+#[gpui_scan::scan]
 impl Render for Stats {
   fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
     div()
@@ -138,7 +140,7 @@ pub struct Demo {
 }
 
 impl Render for Demo {
-  fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
     gpui_scan::scan_root(
       div()
         .relative()
@@ -174,10 +176,10 @@ impl Render for Demo {
           div()
             .flex()
             .gap_4()
-            .child(self.counter.scan_as("Counter", cx))
-            .child(self.pulse.scan_as("Pulse", cx)),
+            .child(self.counter.clone())
+            .child(self.pulse.clone()),
         )
-        .child(self.stats.scan_as("Stats", cx))
+        .child(self.stats.clone())
         .child(div().flex_1())
         .child(
           div()

@@ -2465,6 +2465,8 @@ dependencies = [
  "gpui-devtools",
  "gpui-pre",
  "gpui-pre-platform",
+ "gpui-scan-macros",
+ "rustc-hash 2.1.3",
  "web-time",
 ]
 
@@ -2475,6 +2477,15 @@ dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
  "gpui-scan",
+]
+
+[[package]]
+name = "gpui-scan-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

@@ -12,6 +12,8 @@ include = ["src/**", "assets/**", "README.md", "LICENSE"]
 [dependencies]
 gpui = { package = "gpui-pre", version = "0.3.12", features = ["inspector"] }
 gpui-devtools = "0.6"
+gpui-scan-macros = { version = "0.1.0", path = "gpui-scan-macros" }
+rustc-hash = "2"
 web-time = "1"
 
 [dev-dependencies]
@@ -24,5 +26,5 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", features = 
 ] }
 
 [workspace]
-members = ["examples/basic", "examples/web"]
+members = ["examples/basic", "examples/web", "gpui-scan-macros"]
 resolver = "2"

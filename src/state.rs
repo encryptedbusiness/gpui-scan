@@ -1,10 +1,12 @@
 use std::{
   cell::{Cell, RefCell},
   collections::{HashMap, HashSet, VecDeque},
-  rc::Rc,
+  rc::{Rc, Weak},
+  thread_local,
   time::Duration,
 };
 
+use rustc_hash::FxHashMap;
 use web_time::Instant;
 
 use gpui::{
@@ -44,10 +46,26 @@ impl TrackKey {
     label: SharedString,
     instance: u64,
   ) -> Self {
+    Self::at(
+      location.file(),
+      location.line(),
+      location.column(),
+      label,
+      instance,
+    )
+  }
+
+  pub fn at(
+    file: &'static str,
+    line: u32,
+    column: u32,
+    label: SharedString,
+    instance: u64,
+  ) -> Self {
     Self {
-      file: location.file(),
-      line: location.line(),
-      column: location.column(),
+      file,
+      line,
+      column,
       label,
       instance,
     }
@@ -122,8 +140,12 @@ pub(crate) struct ScanState {
   /// Where the toolbar and the open inspector sit in each window.
   pub widget: WidgetModel,
   ticking: HashSet<WindowId>,
-  signals: HashMap<EntityId, Rc<Cell<bool>>>,
-  subscriptions: HashMap<EntityId, Subscription>,
+  /// Notification flags for views tracked by the `scan` attribute, stored inline so the render
+  /// path never touches a per-view allocation.
+  notified: FxHashMap<EntityId, bool>,
+  notify_subscriptions: FxHashMap<EntityId, Subscription>,
+  signals: FxHashMap<EntityId, Rc<Cell<bool>>>,
+  subscriptions: FxHashMap<EntityId, Subscription>,
 }
 
 impl ScanState {
@@ -135,8 +157,10 @@ impl ScanState {
       docks: HashMap::new(),
       widget: WidgetModel::default(),
       ticking: HashSet::new(),
-      signals: HashMap::new(),
-      subscriptions: HashMap::new(),
+      notified: FxHashMap::default(),
+      notify_subscriptions: FxHashMap::default(),
+      signals: FxHashMap::default(),
+      subscriptions: FxHashMap::default(),
     }
   }
 
@@ -228,6 +252,49 @@ impl ScanState {
   pub fn start_ticking(&mut self, window: WindowId) -> bool {
     self.ticking.insert(window)
   }
+
+  /// The notification flag of a view, cloned so the caller does not hold the state borrow.
+  pub fn signal(&self, entity: EntityId) -> Option<Rc<Cell<bool>>> {
+    self.signals.get(&entity).cloned()
+  }
+
+  pub fn insert_signal(
+    &mut self,
+    entity: EntityId,
+    signal: Rc<Cell<bool>>,
+    subscription: Subscription,
+  ) {
+    self.signals.insert(entity, signal);
+    self.subscriptions.insert(entity, subscription);
+  }
+
+  /// Reads and clears the notification flag of a view.
+  ///
+  /// Returns `(known, notified)`. The first time a view is seen the flag is created set, so its
+  /// first render is reported like a mount.
+  pub fn take_notified(&mut self, entity: EntityId) -> (bool, bool) {
+    match self.notified.get_mut(&entity) {
+      Some(notified) => {
+        let was = *notified;
+        *notified = false;
+        (true, was)
+      }
+      None => {
+        self.notified.insert(entity, false);
+        (false, true)
+      }
+    }
+  }
+
+  pub fn mark_notified(&mut self, entity: EntityId) {
+    if let Some(notified) = self.notified.get_mut(&entity) {
+      *notified = true;
+    }
+  }
+
+  pub fn insert_notify_subscription(&mut self, entity: EntityId, subscription: Subscription) {
+    self.notify_subscriptions.insert(entity, subscription);
+  }
 }
 
 /// Watches a view so that [`Tracked`](crate::Tracked) knows it was notified.
@@ -237,7 +304,11 @@ impl ScanState {
 pub(crate) fn observe_view<V: Render>(entity: &Entity<V>, cx: &mut App) -> Rc<Cell<bool>> {
   let id = entity.entity_id();
 
-  let existing = global(cx).borrow().signals.get(&id).cloned();
+  let existing = {
+    let shared = global(cx);
+    let state = shared.borrow();
+    state.signal(id)
+  };
   if let Some(signal) = existing {
     return signal;
   }
@@ -249,8 +320,7 @@ pub(crate) fn observe_view<V: Render>(entity: &Entity<V>, cx: &mut App) -> Rc<Ce
   {
     let shared = global(cx);
     let mut state = shared.borrow_mut();
-    state.signals.insert(id, signal.clone());
-    state.subscriptions.insert(id, subscription);
+    state.insert_signal(id, signal.clone(), subscription);
   }
 
   signal
@@ -258,6 +328,11 @@ pub(crate) fn observe_view<V: Render>(entity: &Entity<V>, cx: &mut App) -> Rc<Ce
 
 pub(crate) struct ScanGlobal {
   state: Rc<RefCell<ScanState>>,
+}
+
+thread_local! {
+  /// The last state handed out on this thread, keyed by the app it belongs to.
+  static STATE: RefCell<Option<(usize, Weak<RefCell<ScanState>>)>> = const { RefCell::new(None) };
 }
 
 impl Global for ScanGlobal {}
@@ -272,9 +347,37 @@ impl Default for ScanGlobal {
 
 /// The shared scanner state, created on first use so tracking works even without [`init`].
 ///
+/// The state is looked up through a per-thread cache keyed by the [`App`] address. The cache holds
+/// a [`Weak`] reference, so an app that was dropped and whose address was reused cannot hand out
+/// stale state: the weak reference dies with the app's global.
+///
 /// [`init`]: crate::init
+#[inline]
 pub(crate) fn global(cx: &mut App) -> Rc<RefCell<ScanState>> {
-  cx.default_global::<ScanGlobal>().state.clone()
+  let key = cx as *const App as usize;
+  let cached = STATE.with(|slot| match &*slot.borrow() {
+    Some((cached, weak)) if *cached == key => weak.upgrade(),
+    _ => None,
+  });
+  if let Some(state) = cached {
+    return state;
+  }
+
+  // `default_global` queues a global-observer effect on every call. The scanner asks for this
+  // state once per tracked view per frame, so read the existing global directly and only pay
+  // the effect when it has to be created.
+  let state = match cx.try_global::<ScanGlobal>() {
+    Some(existing) => existing.state.clone(),
+    None => {
+      cx.set_global(ScanGlobal::default());
+      cx.try_global::<ScanGlobal>()
+        .expect("the scan global was just installed")
+        .state
+        .clone()
+    }
+  };
+  STATE.with(|slot| *slot.borrow_mut() = Some((key, Rc::downgrade(&state))));
+  state
 }
 
 pub(crate) fn install(config: Config, cx: &mut App) {
@@ -290,6 +393,10 @@ pub(crate) fn install(config: Config, cx: &mut App) {
 
 pub(crate) fn note_render(cx: &mut App, key: TrackKey, bounds: Bounds<Pixels>) {
   global(cx).borrow_mut().note_render(key, bounds);
+}
+
+pub(crate) fn mark_notified(cx: &mut App, entity: EntityId) {
+  global(cx).borrow_mut().mark_notified(entity);
 }
 
 fn px_lerp(current: Pixels, target: Pixels) -> Pixels {

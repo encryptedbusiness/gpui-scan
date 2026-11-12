@@ -46,6 +46,8 @@
 
 #![warn(missing_docs)]
 
+extern crate self as gpui_scan;
+
 mod config;
 mod dock;
 mod geom;
@@ -54,8 +56,11 @@ mod layer;
 mod panel;
 mod state;
 mod tracked;
+#[doc(hidden)]
+pub mod tracking;
 
 pub use config::Config;
+pub use gpui_scan_macros::scan;
 pub use layer::{ScanLayer, ScanRoot, scan_root};
 pub use tracked::{ScanTrackExt, Tracked, track_view, track_view_as, track_view_keyed};
 
@@ -92,6 +97,7 @@ pub fn init_with(config: Config, cx: &mut App) {
   cx.on_action(|_: &CancelPick, cx| dock::cancel_pick_in_active_window(cx));
 
   state::install(config, cx);
+  tracking::enable();
   gpui_devtools::init(cx);
 
   // gpui-devtools registers the per-element panels; the chrome around them is ours, so the

@@ -344,6 +344,53 @@ mod tests {
     assert_eq!(pending(cx), 1, "the notification is reported once");
   }
 
+  struct Attributed {
+    count: u32,
+  }
+
+  #[crate::scan]
+  impl Render for Attributed {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+      div().size_full().child(self.count.to_string())
+    }
+  }
+
+  struct AttributedFixture {
+    view: gpui::Entity<Attributed>,
+  }
+
+  impl Render for AttributedFixture {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+      div().size_full().child(self.view.clone())
+    }
+  }
+
+  #[gpui::test]
+  fn the_scan_attribute_tracks_renders(cx: &mut TestAppContext) {
+    crate::tracking::enable();
+    let view = cx.new(|_| Attributed { count: 0 });
+    let (_root, cx) = cx.add_window_view(|_, _| AttributedFixture { view: view.clone() });
+
+    draw(cx);
+    assert_eq!(pending(cx), 1);
+    commit(cx);
+    assert_eq!(labels(cx), vec!["Attributed"]);
+
+    draw(cx);
+    assert_eq!(pending(cx), 0, "an idle frame does not wrap the element");
+
+    cx.update(|_, cx| {
+      view.update(cx, |view, cx| {
+        view.count += 1;
+        cx.notify();
+      });
+    });
+    cx.run_until_parked();
+
+    draw(cx);
+    assert_eq!(pending(cx), 1, "the notification is reported once");
+  }
+
   struct Shell {
     counter: gpui::Entity<Counter>,
   }

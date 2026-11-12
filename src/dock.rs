@@ -842,6 +842,7 @@ fn resize_handle(dock: Entity<ScanDock>, edge: Edge) -> Div {
 
 /// Returns the window's dock, creating its frame loop the first time it is asked for.
 pub(crate) fn dock_for_window(window: &mut Window, cx: &mut App) -> Entity<ScanDock> {
+  crate::tracking::enable();
   let window_id = window.window_handle().window_id();
 
   let existing = state::global(cx).borrow().docks().get(&window_id).cloned();
