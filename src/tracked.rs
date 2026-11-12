@@ -292,6 +292,18 @@ mod tests {
     })
   }
 
+  fn renders(cx: &mut gpui::VisualTestContext, label: &str) -> u32 {
+    cx.update(|_, cx| {
+      let shared = state::global(cx);
+      let state = shared.borrow();
+      state
+        .highlights()
+        .find(|(key, _)| key.label.as_ref() == label)
+        .map(|(_, highlight)| highlight.renders)
+        .unwrap_or(0)
+    })
+  }
+
   fn bounds() -> Bounds<gpui::Pixels> {
     Bounds::new(point(px(0.0), px(0.0)), size(px(10.0), px(10.0)))
   }
@@ -372,12 +384,16 @@ mod tests {
     let (_root, cx) = cx.add_window_view(|_, _| AttributedFixture { view: view.clone() });
 
     draw(cx);
-    assert_eq!(pending(cx), 1);
     commit(cx);
-    assert_eq!(labels(cx), vec!["Attributed"]);
+    assert_eq!(renders(cx, "Attributed"), 1);
 
     draw(cx);
-    assert_eq!(pending(cx), 0, "an idle frame does not wrap the element");
+    assert_eq!(
+      pending(cx),
+      1,
+      "an active outline keeps refreshing its bounds"
+    );
+    commit(cx);
 
     cx.update(|_, cx| {
       view.update(cx, |view, cx| {
@@ -388,7 +404,80 @@ mod tests {
     cx.run_until_parked();
 
     draw(cx);
-    assert_eq!(pending(cx), 1, "the notification is reported once");
+    commit(cx);
+    assert_eq!(
+      renders(cx, "Attributed"),
+      2,
+      "the notification is reported once"
+    );
+  }
+
+  #[test]
+  fn scrolling_pins_outlines_to_their_target() {
+    let mut state = state::ScanState::new(crate::Config::default());
+    let key = state::TrackKey::new(std::panic::Location::caller(), "Counter".into(), 0);
+    let start = Instant::now();
+    state.note_render(key.clone(), bounds());
+    state.commit_frame(start);
+
+    let moved = Bounds::new(point(px(80.0), px(80.0)), size(px(10.0), px(10.0)));
+    state.note_bounds(key, moved);
+    state.commit_frame(start + Duration::from_millis(10));
+
+    state.mark_scroll(start + Duration::from_millis(20));
+    state.step_highlights(start + Duration::from_millis(30));
+
+    let highlight = state.highlights().next().unwrap().1;
+    assert_eq!(
+      highlight.bounds, moved,
+      "a scroll pins the outline to the target instead of easing"
+    );
+  }
+
+  #[test]
+  fn bounds_only_updates_do_not_refresh_the_outline() {
+    let mut state = state::ScanState::new(crate::Config::default());
+    let key = state::TrackKey::new(std::panic::Location::caller(), "Counter".into(), 0);
+    let start = Instant::now();
+    state.note_render(key.clone(), bounds());
+    state.commit_frame(start);
+
+    let before = state.highlights().next().unwrap().1;
+    let updated_at = before.updated_at;
+    let renders = before.renders;
+
+    let moved = Bounds::new(point(px(0.0), px(40.0)), size(px(10.0), px(10.0)));
+    state.note_bounds(key, moved);
+    state.commit_frame(start + HIGHLIGHT_LIFETIME / 2);
+
+    let after = state.highlights().next().unwrap().1;
+    assert_eq!(after.target, moved, "the outline follows the new bounds");
+    assert_eq!(after.updated_at, updated_at, "the fade is not refreshed");
+    assert_eq!(after.renders, renders, "the update count is not raised");
+  }
+
+  #[test]
+  fn an_outline_tracks_bounds_until_its_lifetime_expires() {
+    let mut state = state::ScanState::new(crate::Config::default());
+    let entity = gpui::EntityId::from(1);
+    let now = Instant::now();
+
+    let (known, fresh, active) = state.take_notified(entity);
+    assert!(!known && fresh && active, "the first sighting is a mount");
+    state.activate(entity, now + HIGHLIGHT_LIFETIME);
+
+    let (known, fresh, active) = state.take_notified(entity);
+    assert!(
+      known && !fresh && active,
+      "an outlined view keeps refreshing its bounds"
+    );
+
+    state.prune(now + HIGHLIGHT_LIFETIME + Duration::from_millis(1));
+    let (_, fresh, active) = state.take_notified(entity);
+    assert!(
+      !fresh && !active,
+      "the outline stops tracking after its lifetime"
+    );
   }
 
   struct Shell {

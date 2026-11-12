@@ -7,7 +7,8 @@ use web_time::Instant;
 use gpui::{
   AnyElement, App, AppContext as _, Bounds, BoxShadow, ClickEvent, Context, DispatchPhase, Div,
   Empty, Entity, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-  Point, Render, SharedString, WeakEntity, Window, canvas, div, hsla, prelude::*, px, rgb,
+  Point, Render, ScrollEvent, SharedString, WeakEntity, Window, canvas, div, hsla, prelude::*, px,
+  rgb,
 };
 
 use crate::{
@@ -335,7 +336,7 @@ impl ScanDock {
       let shared = state::global(cx);
       let mut scan = shared.borrow_mut();
       let fading = scan.commit_frame(now) > 0;
-      scan.step_highlights();
+      scan.step_highlights(now);
       let moving = scan.widget.step(now) || scan.widget.place(width, height, now);
       let pointer = scan.widget.is_dragging() || scan.widget.has_resize();
       let opacity = scan.widget.opacity(now);
@@ -481,6 +482,7 @@ fn render_listeners(dock: Entity<ScanDock>) -> impl IntoElement {
   let measure = dock.downgrade();
   let movement = dock.downgrade();
   let release = dock.downgrade();
+  let scrolling = dock.downgrade();
 
   canvas(
     move |bounds, _, cx| {
@@ -511,6 +513,15 @@ fn render_listeners(dock: Entity<ScanDock>) -> impl IntoElement {
         };
         let position = event.position;
         dock.update(cx, |dock, cx| dock.pointer_up(position, window, cx));
+      });
+
+      // Outlines should stick to their content while a scroll is in flight instead of easing
+      // behind it. The event is global, so every scrollable area in the window is covered.
+      let scrolling = scrolling.clone();
+      window.on_mouse_event(move |_: &ScrollEvent, phase, _, cx| {
+        if phase == DispatchPhase::Bubble && scrolling.upgrade().is_some() {
+          state::note_scroll(cx);
+        }
       });
     },
   )

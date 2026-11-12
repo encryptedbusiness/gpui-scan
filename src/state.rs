@@ -75,10 +75,31 @@ impl TrackKey {
 struct PendingRender {
   key: TrackKey,
   bounds: Bounds<Pixels>,
+  /// `true` for a fresh update, `false` when only the on-screen rectangle moved (for example
+  /// because an ancestor scrolled) and the highlight's lifetime must not be refreshed.
+  fresh: bool,
+}
+
+/// Per-view bookkeeping for the `scan` attribute.
+struct Notice {
+  /// A notification arrived that has not been consumed by a render yet.
+  notified: bool,
+  /// The view has a visible outline, so its bounds are tracked every frame until it expires.
+  active: bool,
+  /// When [`Self::active`] stops being true. Extending it leaves stale expiries behind; the
+  /// expiry pass compares against this value before clearing the flag.
+  active_until: Instant,
 }
 
 /// How often the per-element update count is reset, so the badge reads as updates per second.
 const RENDER_WINDOW: Duration = Duration::from_secs(1);
+
+/// How long after a scroll event outlines snap to their target instead of easing toward it.
+///
+/// Scrolling moves every element at once. Letting the outline lerp there reads as a lag, so it is
+/// pinned while the scroll is in flight; element movement outside a scroll keeps the React Scan
+/// chase.
+const SCROLL_SNAP: Duration = Duration::from_millis(150);
 
 /// An element that updated recently and is currently outlined.
 pub(crate) struct Highlight {
@@ -142,10 +163,15 @@ pub(crate) struct ScanState {
   ticking: HashSet<WindowId>,
   /// Notification flags for views tracked by the `scan` attribute, stored inline so the render
   /// path never touches a per-view allocation.
-  notified: FxHashMap<EntityId, bool>,
+  notified: FxHashMap<EntityId, Notice>,
+  /// When each active view's outline stops being tracked. Kept in notification order so the
+  /// per-frame pass only touches entries that expired.
+  active_expiries: VecDeque<(Instant, EntityId)>,
   notify_subscriptions: FxHashMap<EntityId, Subscription>,
   signals: FxHashMap<EntityId, Rc<Cell<bool>>>,
   subscriptions: FxHashMap<EntityId, Subscription>,
+  /// The last scroll event observed by the overlay. Outlines snap while this is recent.
+  last_scroll: Option<Instant>,
 }
 
 impl ScanState {
@@ -158,9 +184,11 @@ impl ScanState {
       widget: WidgetModel::default(),
       ticking: HashSet::new(),
       notified: FxHashMap::default(),
+      active_expiries: VecDeque::new(),
       notify_subscriptions: FxHashMap::default(),
       signals: FxHashMap::default(),
       subscriptions: FxHashMap::default(),
+      last_scroll: None,
     }
   }
 
@@ -170,7 +198,21 @@ impl ScanState {
 
   /// Records that a tracked element was laid out again during the current frame.
   pub fn note_render(&mut self, key: TrackKey, bounds: Bounds<Pixels>) {
-    self.pending.push(PendingRender { key, bounds });
+    self.pending.push(PendingRender {
+      key,
+      bounds,
+      fresh: true,
+    });
+  }
+
+  /// Records that an active outline moved without the view changing, such as when an ancestor
+  /// scrolled. This updates the rectangle the outline chases without extending its lifetime.
+  pub fn note_bounds(&mut self, key: TrackKey, bounds: Bounds<Pixels>) {
+    self.pending.push(PendingRender {
+      key,
+      bounds,
+      fresh: false,
+    });
   }
 
   /// Turns everything recorded during the frame into highlights and prunes the expired ones.
@@ -186,13 +228,15 @@ impl ScanState {
       if let Some(highlight) = self.highlights.get_mut(&pending.key) {
         // Keep the on-screen rect so it can chase the new bounds instead of jumping.
         highlight.target = pending.bounds;
-        highlight.updated_at = now;
-        if now.duration_since(highlight.window_start) >= RENDER_WINDOW {
-          highlight.window_start = now;
-          highlight.renders = 0;
+        if pending.fresh {
+          highlight.updated_at = now;
+          if now.duration_since(highlight.window_start) >= RENDER_WINDOW {
+            highlight.window_start = now;
+            highlight.renders = 0;
+          }
+          highlight.renders += 1;
         }
-        highlight.renders += 1;
-      } else {
+      } else if pending.fresh {
         self.highlights.insert(
           pending.key,
           Highlight {
@@ -215,9 +259,19 @@ impl ScanState {
     self.pending.len()
   }
 
-  /// Moves each outline a step toward the rectangle it was last laid out in.
-  pub fn step_highlights(&mut self) {
+  /// Moves each outline toward the rectangle it was last laid out in.
+  ///
+  /// During a scroll the outline is pinned to the target; scrolling moves every element at once,
+  /// so easing there reads as the overlay lagging behind the content.
+  pub fn step_highlights(&mut self, now: Instant) {
+    let snap = self
+      .last_scroll
+      .is_some_and(|scrolled| now.duration_since(scrolled) < SCROLL_SNAP);
     for highlight in self.highlights.values_mut() {
+      if snap {
+        highlight.bounds = highlight.target;
+        continue;
+      }
       highlight.bounds.origin.x = px_lerp(highlight.bounds.origin.x, highlight.target.origin.x);
       highlight.bounds.origin.y = px_lerp(highlight.bounds.origin.y, highlight.target.origin.y);
       highlight.bounds.size.width =
@@ -227,13 +281,36 @@ impl ScanState {
     }
   }
 
+  pub fn mark_scroll(&mut self, now: Instant) {
+    self.last_scroll = Some(now);
+  }
+
   pub fn prune(&mut self, now: Instant) {
+    self.prune_active(now);
     let Some(cutoff) = now.checked_sub(HIGHLIGHT_LIFETIME) else {
       return;
     };
     self
       .highlights
       .retain(|_, highlight| highlight.updated_at >= cutoff);
+  }
+
+  /// Clears the active flag of every outline whose lifetime has passed.
+  ///
+  /// Expiries are pushed in notification order. A later notification pushes a later expiry; the
+  /// earlier entry is discarded without clearing the flag because `active_until` was extended.
+  fn prune_active(&mut self, now: Instant) {
+    while let Some((until, entity)) = self.active_expiries.front().copied() {
+      if until > now {
+        break;
+      }
+      self.active_expiries.pop_front();
+      if let Some(notice) = self.notified.get_mut(&entity)
+        && notice.active_until <= now
+      {
+        notice.active = false;
+      }
+    }
   }
 
   pub fn highlights(&self) -> impl Iterator<Item = (&TrackKey, &Highlight)> {
@@ -270,25 +347,43 @@ impl ScanState {
 
   /// Reads and clears the notification flag of a view.
   ///
-  /// Returns `(known, notified)`. The first time a view is seen the flag is created set, so its
-  /// first render is reported like a mount.
-  pub fn take_notified(&mut self, entity: EntityId) -> (bool, bool) {
+  /// Returns `(known, fresh, active)`. `fresh` means a notification is being consumed, so the
+  /// outline's lifetime should be extended. `active` means the view still has a visible outline
+  /// and its bounds should be tracked even though it did not change. The first time a view is
+  /// seen it is reported like a mount.
+  pub fn take_notified(&mut self, entity: EntityId) -> (bool, bool, bool) {
     match self.notified.get_mut(&entity) {
-      Some(notified) => {
-        let was = *notified;
-        *notified = false;
-        (true, was)
+      Some(notice) => {
+        let fresh = notice.notified;
+        notice.notified = false;
+        (true, fresh, notice.active || fresh)
       }
       None => {
-        self.notified.insert(entity, false);
-        (false, true)
+        self.notified.insert(
+          entity,
+          Notice {
+            notified: false,
+            active: true,
+            active_until: Instant::now(),
+          },
+        );
+        (false, true, true)
       }
     }
   }
 
+  /// Extends the active window of a view until `until`.
+  pub fn activate(&mut self, entity: EntityId, until: Instant) {
+    if let Some(notice) = self.notified.get_mut(&entity) {
+      notice.active = true;
+      notice.active_until = until;
+    }
+    self.active_expiries.push_back((until, entity));
+  }
+
   pub fn mark_notified(&mut self, entity: EntityId) {
-    if let Some(notified) = self.notified.get_mut(&entity) {
-      *notified = true;
+    if let Some(notice) = self.notified.get_mut(&entity) {
+      notice.notified = true;
     }
   }
 
@@ -395,8 +490,16 @@ pub(crate) fn note_render(cx: &mut App, key: TrackKey, bounds: Bounds<Pixels>) {
   global(cx).borrow_mut().note_render(key, bounds);
 }
 
+pub(crate) fn note_bounds(cx: &mut App, key: TrackKey, bounds: Bounds<Pixels>) {
+  global(cx).borrow_mut().note_bounds(key, bounds);
+}
+
 pub(crate) fn mark_notified(cx: &mut App, entity: EntityId) {
   global(cx).borrow_mut().mark_notified(entity);
+}
+
+pub(crate) fn note_scroll(cx: &mut App) {
+  global(cx).borrow_mut().mark_scroll(Instant::now());
 }
 
 fn px_lerp(current: Pixels, target: Pixels) -> Pixels {

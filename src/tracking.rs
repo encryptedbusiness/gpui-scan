@@ -2,9 +2,9 @@
 //!
 //! The attribute calls [`begin`] before a view renders and [`finish`] with the rendered element.
 //! While scanning is off that is a single relaxed atomic load. While it is on, [`begin`] reads and
-//! clears the view's notification flag in one map access, and [`finish`] only builds a tracking
-//! element on the frame the view was notified. Idle frames return the view's own element
-//! untouched, so a tracked view costs the same as an untracked one apart from that lookup.
+//! clears the view's notification flag in one map access. While the view has an outline on screen,
+//! [`begin`] keeps returning a signal so the outline follows layout changes such as an ancestor
+//! scrolling. Idle frames return the view's own element untouched.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,8 +12,9 @@ use gpui::{
   AnyElement, App, Bounds, Context, Element, ElementId, EntityId, GlobalElementId,
   InspectorElementId, IntoElement, LayoutId, Pixels, Window,
 };
+use web_time::Instant;
 
-use crate::state::{self, TrackKey};
+use crate::state::{self, HIGHLIGHT_LIFETIME, TrackKey};
 
 /// Whether anything ever asked for scanning. Set by [`init`](crate::init) and by the overlay.
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -22,18 +23,29 @@ pub(crate) fn enable() {
   ENABLED.store(true, Ordering::Relaxed);
 }
 
-/// Marks the view as changed and returns its id when it should be wrapped this frame.
+/// The state of one view for the current frame.
 ///
-/// Returns `None` while scanning is disabled, and on frames the view did not change.
+/// `fresh` marks a consumed notification. When it is false the wrapper exists only because the
+/// view still has a visible outline, so its bounds are refreshed without extending the fade.
+#[doc(hidden)]
+pub struct Signal {
+  entity: EntityId,
+  fresh: bool,
+}
+
+/// Resolves the tracking signal of the view being rendered.
+///
+/// Returns `None` while scanning is disabled, and on frames when the view neither changed nor
+/// still has an outline on screen.
 #[doc(hidden)]
 #[inline]
-pub fn begin<T: 'static>(cx: &mut Context<'_, T>) -> Option<EntityId> {
+pub fn begin<T: 'static>(cx: &mut Context<'_, T>) -> Option<Signal> {
   if !ENABLED.load(Ordering::Relaxed) {
     return None;
   }
 
   let entity = cx.entity_id();
-  let (known, notified) = {
+  let (known, fresh, active) = {
     let shared = state::global(cx);
     let mut state = shared.borrow_mut();
     state.take_notified(entity)
@@ -47,14 +59,21 @@ pub fn begin<T: 'static>(cx: &mut Context<'_, T>) -> Option<EntityId> {
     state.insert_notify_subscription(entity, subscription);
   }
 
-  notified.then_some(entity)
+  if fresh {
+    let until = Instant::now() + HIGHLIGHT_LIFETIME;
+    let shared = state::global(cx);
+    let mut state = shared.borrow_mut();
+    state.activate(entity, until);
+  }
+
+  (fresh || active).then_some(Signal { entity, fresh })
 }
 
-/// Wraps the rendered element in a bounds recorder when the view was notified this frame.
+/// Wraps the rendered element in a bounds recorder while the view is fresh or still outlined.
 #[doc(hidden)]
 #[inline]
 pub fn finish<E: IntoElement>(
-  signal: Option<EntityId>,
+  signal: Option<Signal>,
   element: E,
   label: &'static str,
   file: &'static str,
@@ -62,9 +81,10 @@ pub fn finish<E: IntoElement>(
   column: u32,
 ) -> AnyElement {
   match signal {
-    Some(entity) => TrackedRender {
+    Some(signal) => TrackedRender {
       element: element.into_any_element(),
-      entity,
+      entity: signal.entity,
+      fresh: signal.fresh,
       label,
       file,
       line,
@@ -78,6 +98,7 @@ pub fn finish<E: IntoElement>(
 struct TrackedRender {
   element: AnyElement,
   entity: EntityId,
+  fresh: bool,
   label: &'static str,
   file: &'static str,
   line: u32,
@@ -123,17 +144,18 @@ impl Element for TrackedRender {
     window: &mut Window,
     cx: &mut App,
   ) {
-    state::note_render(
-      cx,
-      TrackKey::at(
-        self.file,
-        self.line,
-        self.column,
-        self.label.into(),
-        self.entity.as_u64(),
-      ),
-      bounds,
+    let key = TrackKey::at(
+      self.file,
+      self.line,
+      self.column,
+      self.label.into(),
+      self.entity.as_u64(),
     );
+    if self.fresh {
+      state::note_render(cx, key, bounds);
+    } else {
+      state::note_bounds(cx, key, bounds);
+    }
     self.element.prepaint(window, cx);
   }
 
