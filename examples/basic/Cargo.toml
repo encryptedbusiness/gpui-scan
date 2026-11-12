@@ -1,0 +1,23 @@
+[package]
+name = "gpui-scan-basic"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "gpui_scan_basic"
+path = "src/demo.rs"
+
+[[bin]]
+name = "gpui-scan-basic"
+path = "src/main.rs"
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "0.3.12", features = ["inspector"] }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", default-features = false, features = [
+  "font-kit",
+  "x11",
+  "wayland",
+  "runtime_shaders",
+] }
+gpui-scan = { path = "../.." }

@@ -1,0 +1,28 @@
+[package]
+name = "gpui-scan"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "React Scan for GPUI: FPS, re-render outlines and a devtools inspector for any GPUI application"
+license = "MIT"
+keywords = ["gpui", "devtools", "profiler", "rerender", "scan"]
+categories = ["development-tools::debugging", "gui"]
+include = ["src/**", "assets/**", "README.md", "LICENSE"]
+
+[dependencies]
+gpui = { package = "gpui-pre", version = "0.3.12", features = ["inspector"] }
+gpui-devtools = "0.6"
+web-time = "1"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "0.3.12", features = ["inspector", "test-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", features = [
+  "font-kit",
+  "x11",
+  "wayland",
+  "runtime_shaders",
+] }
+
+[workspace]
+members = ["examples/basic", "examples/web"]
+resolver = "2"
