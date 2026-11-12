@@ -1,6 +1,6 @@
 [package]
 name = "gpui-scan"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
 description = "React Scan for GPUI: re-render outlines, a live FPS readout, and a devtools inspector for any GPUI application"
