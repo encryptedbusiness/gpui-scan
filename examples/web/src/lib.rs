@@ -1,6 +1,9 @@
 use gpui::{App, AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
-use gpui_scan_basic::demo;
 use wasm_bindgen::prelude::*;
+
+mod site;
+
+use site::Site;
 
 #[wasm_bindgen(start)]
 pub fn start() {
@@ -13,18 +16,19 @@ pub fn start() {
   let application = gpui_platform::application();
 
   application.run(|cx: &mut App| {
-    gpui_scan::init(cx);
+    gpui_kit::init(cx);
+    gpui_scan::init_with(gpui_scan::Config::default().outlines(true), cx);
 
     #[cfg(target_family = "wasm")]
     add_fonts(cx);
 
-    let bounds = Bounds::centered(None, size(px(880.0), px(560.0)), cx);
+    let bounds = Bounds::centered(None, size(px(1000.0), px(760.0)), cx);
     cx.open_window(
       WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         ..Default::default()
       },
-      |_window, cx| cx.new(demo),
+      |_window, cx| cx.new(Site::new),
     )
     .unwrap();
 

@@ -195,19 +195,24 @@ its own renderer, and do not also call `gpui_devtools::init`.
 
 ## Examples
 
+![The gpui-scan website with the live wasm demo](assets/screenshots/website.png)
+
 ```sh
 # Native demo
 cargo run -p gpui-scan-basic
 
-# Web demo
+# Website with the live wasm demo
 examples/web/build.sh
 python3 -m http.server -d examples/web/www 4173
 ```
 
-Both demos share `examples/basic/src/demo.rs`. The web build needs
+`examples/basic` is the shared interactive demo. `examples/web` is the landing page — nav, feature
+sections, install snippets with copy, and the same demo embedded in its Demo section — built with
+[gpui-kit](https://gpui-kit.com) and compiled to wasm. The build is release-optimized by default
+(~9MB); pass `--debug` for an unoptimized development build. It needs
 `rustup target add wasm32-unknown-unknown` and a `wasm-bindgen` CLI matching the crate version in
-`Cargo.lock`. The browser has no system fonts, so the page registers the bundled IBM Plex Sans
-face before the first frame.
+`Cargo.lock`. The build script enables the single-threaded web path; the page registers the bundled
+IBM Plex Sans face before the first frame because the browser has no system fonts.
 
 ## Contributing
 

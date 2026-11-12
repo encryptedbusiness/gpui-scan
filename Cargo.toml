@@ -34,6 +34,13 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3.12", features = 
 [lints]
 workspace = true
 
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [workspace]
 members = ["examples/basic", "examples/web", "gpui-scan-macros"]
 resolver = "2"
